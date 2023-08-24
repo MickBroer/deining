@@ -2,8 +2,7 @@ import os
 import math
 from pydub import AudioSegment
 from datetime import datetime
-from tkinter import filedialog
-import tkinter as tk
+import wx
 import array
 import random
 import platform
@@ -11,6 +10,11 @@ import platform
 # Definitions
 audio_folders = []
 current_folder = None
+
+parameters = [
+    "sample", "amplitude", "rhythm", "stretch", "grain start", 
+    "panning", "grain duration", "fade in", "fade out"
+]
 
 if platform.system() == "Darwin":
     ffmpeg_path = os.path.join(os.getcwd(), "mac", "ffmpeg")
@@ -29,7 +33,7 @@ class AudioFolder:
         self.formulas = {
             "sample": "x",
             "amplitude": "0.9",
-            "rhythm": "(x + 5) / 10",
+            "rhythm": "(x+5)/10",
             "stretch": "1.0",
             "grain start": "x/10%100",
             "panning": "0",
@@ -66,10 +70,6 @@ def get_evaluation_context(t_millis):
         context[formula_name] = simple_evaluate(formula, x_value, context)
     
     return context
-
-
-
-
 
 def multiplier_to_db(multiplier):
     return 20 * math.log10(multiplier)
@@ -219,33 +219,6 @@ def ensure_exports_folder_exists():
     if not os.path.exists(exports_path):
         os.makedirs(exports_path)
 
-def export():
-    ensure_exports_folder_exists()
-    global duration_spinbox
-    duration = int(duration_spinbox.get())
-    combined_audio = AudioSegment.silent(duration=int(duration * 1000))
-    for folder in audio_folders:
-        folder_audio = fill_audio_based_on_formula(
-            folder.audio_files, 
-            folder.formulas["sample"], 
-            folder.formulas["rhythm"], 
-            folder.formulas["stretch"], 
-            folder.formulas["grain start"], 
-            folder.formulas["grain duration"], 
-            int(duration * 1000)
-        )
-        amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000))
-        gain_db = multiplier_to_db(amplitude_multiplier)
-        folder_audio = folder_audio.apply_gain(gain_db)
-        combined_audio = combined_audio.overlay(folder_audio)
-
-    current_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exports_path = os.path.join(os.getcwd(), "exports")
-    filename = os.path.join(exports_path, f"combined_output_{current_time_str}." + selected_format.get())
-
-    combined_audio.export(filename, format=selected_format.get(), bitrate=selected_bitrate.get(), parameters=["-ar", str(selected_sample_rate.get())])
-    print(f"Audio files combined and saved as '{filename}'")
-
 
 def extract_grain(audio, start_formula, duration_formula, t_millis):
     start_percent = evaluate_formula(start_formula, t_millis) / 100
@@ -269,123 +242,152 @@ def extract_grain(audio, start_formula, duration_formula, t_millis):
     return windowed_grain
 
 
-
-
-
-def add_new_folder():
-    global current_folder
-    path = filedialog.askdirectory()
-    if path:
-        new_folder = AudioFolder(path)
-        new_folder.load_audio_files()
-        audio_folders.append(new_folder)
-        current_folder = new_folder
-        
-        # Insert and select the newly added folder in the listbox
-        folder_listbox.insert(tk.END, os.path.basename(path))
-        folder_listbox.selection_set(tk.END)  # Select the last added entry
-        
-        # Enable the entry boxes and display default formulas
-        for entry in entries.values():
-            entry.config(state=tk.NORMAL)
-        update_display()
-
-def update_formula(event, param):
-    if current_folder:
-        # Only update the formula for printable characters and specific keys.
-        if event.char.isprintable() or event.keysym in ["BackSpace", "Delete", "Enter"]:
-            current_folder.formulas[param] = entries[param].get().strip()
-            update_display()
-
-def update_display():
-    if current_folder:
-        for param in parameters:
-            formula = current_folder.formulas.get(param, "")
-            entries[param].delete(0, tk.END)
-            entries[param].insert(0, formula)
-
-def switch_folder(event):
-    global current_folder
-    try:
-        index = folder_listbox.curselection()[0]
-        current_folder = audio_folders[index]
-        update_display()
-    except:
-        pass
-
 # Options for file formats, bitrates, and sample rates
 file_formats = ["wav", "mp3", "flac", "ogg"]
 bitrates = ["64k", "128k", "192k", "256k", "320k"]
 sample_rates = ["22050", "44100", "48000", "96000"]
 
-# UI Components
-root = tk.Tk()
-root.geometry("900x600")  # Adjusted to fit new components
-root.resizable(False, False)
-root.title("deining")
+class AppFrame(wx.Frame):
+    def add_new_folder(self, event):
+        global current_folder  # Declare current_folder as global
+        dialog = wx.DirDialog(self, "Choose a directory:", style=wx.DD_DEFAULT_STYLE)
+        if dialog.ShowModal() == wx.ID_OK:
+            path = dialog.GetPath()
+            new_folder = AudioFolder(path)
+            new_folder.load_audio_files()
+            audio_folders.append(new_folder)
+            current_folder = new_folder
+            self.folder_listbox.Append(os.path.basename(path))
+            self.folder_listbox.SetSelection(self.folder_listbox.GetCount() - 1)  # Select the last added entry
+            self.update_display()
+        dialog.Destroy()
 
-duration = 120
+    def update_formula(self, param, event):
+        if self.updating_programmatically:
+            return
 
-main_frame = tk.Frame(root)
-main_frame.pack(fill="both", expand=True)
+        if current_folder:
+            current_folder.formulas[param] = self.entries[param].GetValue().strip()
+            self.update_display()
 
-# Add Folder button
-select_button = tk.Button(main_frame, text="Add Folder", width=10, command=add_new_folder)
-select_button.grid(row=0, column=0, padx=20, pady=20, sticky="w")
 
-# Duration label and spinbox
-duration_label = tk.Label(main_frame, text="Duration:")
-duration_label.grid(row=0, column=1, padx=10, pady=20, sticky="w")
+    def update_display(self):
+        if current_folder:
+            self.updating_programmatically = True
+            for param in parameters:
+                formula = current_folder.formulas.get(param, "")
+                self.entries[param].SetValue(formula)
+            self.updating_programmatically = False
 
-duration_spinbox = tk.Spinbox(main_frame, from_=1, to=10000, width=7)
-duration_spinbox.grid(row=0, column=1, padx=(80,0), pady=20, sticky="w")
-duration_spinbox.delete(0, tk.END)
-duration_spinbox.insert(0, duration)
 
-seconds_label = tk.Label(main_frame, text="s")
-seconds_label.grid(row=0, column=1, padx=(170,0), pady=20, sticky="w")
+    def switch_folder(self, event):
+        global current_folder  # Declare current_folder as global
+        try:
+            index = self.folder_listbox.GetSelection()
+            current_folder = audio_folders[index]
+            self.update_display()
+        except:
+            pass
 
-# Variables to store the selected values
-selected_format = tk.StringVar(root)
-selected_format.set(file_formats[0])  # default value
+    def export(self, event):
+        ensure_exports_folder_exists()
+        duration = self.duration_spin.GetValue()
+        combined_audio = AudioSegment.silent(duration=int(duration * 1000))
+        for folder in audio_folders:
+            folder_audio = fill_audio_based_on_formula(
+                folder.audio_files, 
+                folder.formulas["sample"], 
+                folder.formulas["rhythm"], 
+                folder.formulas["stretch"], 
+                folder.formulas["grain start"], 
+                folder.formulas["grain duration"], 
+                int(duration * 1000)
+            )
+            amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000))
+            gain_db = multiplier_to_db(amplitude_multiplier)
+            folder_audio = folder_audio.apply_gain(gain_db)
+            combined_audio = combined_audio.overlay(folder_audio)
 
-selected_bitrate = tk.StringVar(root)
-selected_bitrate.set(bitrates[1])  # default value
+        current_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        exports_path = os.path.join(os.getcwd(), "exports")
+        filename = os.path.join(exports_path, f"combined_output_{current_time_str}." + self.format_dropdown.GetStringSelection())
 
-selected_sample_rate = tk.StringVar(root)
-selected_sample_rate.set(sample_rates[1])  # default value
+        combined_audio.export(filename, format=self.format_dropdown.GetStringSelection(), bitrate=self.bitrate_dropdown.GetStringSelection(), parameters=["-ar", str(self.sample_rate_dropdown.GetStringSelection())])
+        wx.MessageBox(f"Audio files combined and saved as '{filename}'", 'Info', wx.OK | wx.ICON_INFORMATION)
 
-# Create the dropdown menus
-format_menu = tk.OptionMenu(main_frame, selected_format, *file_formats)
-format_menu.grid(row=0, column=2, padx=10, pady=20, sticky="w")
 
-bitrate_menu = tk.OptionMenu(main_frame, selected_bitrate, *bitrates)
-bitrate_menu.grid(row=0, column=2, padx=(0,200), pady=20, sticky="e")
+    def __init__(self, parent, title):
+        super(AppFrame, self).__init__(parent, title=title, size=(900, 600))
 
-sample_rate_menu = tk.OptionMenu(main_frame, selected_sample_rate, *sample_rates)
-sample_rate_menu.grid(row=0, column=2, padx=(0,100), pady=20, sticky="e")
+        self.InitUI()
 
-# Export button
-export_button = tk.Button(main_frame, text="Export", width=10, command=export)
-export_button.grid(row=0, column=0, padx=(0,100), pady=20, sticky="e")
+    def InitUI(self):
+        panel = wx.Panel(self)
+        vbox = wx.BoxSizer(wx.VERTICAL)
 
-# Folder listbox
-folder_listbox = tk.Listbox(main_frame, width=30)
-folder_listbox.grid(row=1, column=0, padx=20, pady=5, rowspan=6, sticky="w")
-folder_listbox.bind("<<ListboxSelect>>", switch_folder)
+        # Top layout
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
 
-# Parameters entries
-parameters = ["sample", "amplitude", "rhythm", "stretch", "grain start", "grain duration", "panning", "fade in", "fade out"]
-entries = {}  # store references to entries for later retrieval of their values
+        # Add Folder button
+        select_button = wx.Button(panel, label='Add Folder')
+        select_button.Bind(wx.EVT_BUTTON, self.add_new_folder)
+        hbox1.Add(select_button, flag=wx.RIGHT, border=10)
 
-for idx, param in enumerate(parameters):
-    label = tk.Label(main_frame, text=param.capitalize())
-    label.grid(row=idx+1, column=1, padx=10, pady=5, sticky="w")
-    y_label = tk.Label(main_frame, text="y=")
-    y_label.grid(row=idx+1, column=1, padx=(170,0), pady=5, sticky="w")
-    entry = tk.Entry(main_frame, width=35, state=tk.DISABLED)
-    entry.grid(row=idx+1, column=2, padx=10, pady=5, sticky="w")
-    entry.bind("<KeyRelease>", lambda event, p=param: update_formula(event, p))
-    entries[param] = entry
+        # Duration label and spinbox
+        duration_label = wx.StaticText(panel, label='Duration:')
+        hbox1.Add(duration_label, flag=wx.RIGHT, border=10)
 
-root.mainloop()
+        self.duration_spin = wx.SpinCtrl(panel, value='120', min=1, max=10000)
+        hbox1.Add(self.duration_spin, flag=wx.RIGHT, border=10)
+
+        seconds_label = wx.StaticText(panel, label='s')
+        hbox1.Add(seconds_label, flag=wx.RIGHT, border=10)
+
+        # Dropdowns for format, bitrate, and sample rate
+        self.format_dropdown = wx.Choice(panel, choices=file_formats)
+        hbox1.Add(self.format_dropdown, flag=wx.RIGHT, border=10)
+
+        self.bitrate_dropdown = wx.Choice(panel, choices=bitrates)
+        hbox1.Add(self.bitrate_dropdown, flag=wx.RIGHT, border=10)
+
+        self.sample_rate_dropdown = wx.Choice(panel, choices=sample_rates)
+        hbox1.Add(self.sample_rate_dropdown, flag=wx.RIGHT, border=10)
+
+        # Export button
+        export_button = wx.Button(panel, label='Export')
+        export_button.Bind(wx.EVT_BUTTON, self.export)
+        hbox1.Add(export_button)
+
+        vbox.Add(hbox1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+
+        # Folder listbox
+        self.folder_listbox = wx.ListBox(panel)
+        self.folder_listbox.Bind(wx.EVT_LISTBOX, self.switch_folder)
+        vbox.Add(self.folder_listbox, proportion=1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+
+        self.format_dropdown.SetSelection(0)  # Default to 'wav'
+        self.bitrate_dropdown.SetSelection(1)  # Default to '128k'
+        self.sample_rate_dropdown.SetSelection(1)  # Default to '44100'
+
+        # Parameters entries
+        self.entries = {}
+        for param in parameters:
+            hbox = wx.BoxSizer(wx.HORIZONTAL)
+            label = wx.StaticText(panel, label=param.capitalize())
+            hbox.Add(label, flag=wx.RIGHT, border=10)
+            entry = wx.TextCtrl(panel)
+            entry.Bind(wx.EVT_TEXT, lambda event, p=param: self.update_formula(p, event))
+            self.entries[param] = entry
+            hbox.Add(entry, proportion=1)
+            vbox.Add(hbox, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+
+        panel.SetSizer(vbox)
+        self.updating_programmatically = False
+
+        self.Centre()
+        self.Show(True)
+
+
+app = wx.App()
+AppFrame(None, 'deining')
+app.MainLoop()
