@@ -12,8 +12,8 @@ audio_folders = []
 current_folder = None
 
 parameters = [
-    "sample", "amplitude", "rhythm", "stretch", "grain start", 
-    "panning", "grain duration", "fade in", "fade out"
+    "sample", "amplitude", "spacing", "playback speed", "start", 
+    "panning", "duration", "fade in", "fade out"
 ]
 
 if platform.system() == "Darwin":
@@ -33,11 +33,11 @@ class AudioFolder:
         self.formulas = {
             "sample": "x",
             "amplitude": "0.9",
-            "rhythm": "(x+5)/10",
-            "stretch": "1.0",
-            "grain start": "x/10%100",
+            "spacing": "(x+5)/10",
+            "playback speed": "1.0",
+            "start": "x/10%100",
             "panning": "0",
-            "grain duration": "100",  # Default to 0% of the audio file
+            "duration": "100",  # Default to 0% of the audio file
             "fade in": "0.5",  # Default to 0.5 seconds
             "fade out": "0.5"  # Default to 0.5 seconds
         }
@@ -79,12 +79,17 @@ def get_audio_for_time(audios, formula, t_millis):
     index = int(y) % len(audios)
     return audios[index]
 
-def time_stretch(audio, stretch_factor):
-    """Time-stretch an audio segment by the given factor using pydub."""
-    stretched_audio = audio._spawn(audio.raw_data, overrides={
-        "frame_rate": int(audio.frame_rate * stretch_factor)
+def time_playback_speed(audio, playback_speed_factor):
+    """Time-playback_speed an audio segment by the given factor using pydub."""
+    if playback_speed_factor < 0:
+        audio = audio.reverse()
+        playback_speed_factor = abs(playback_speed_factor)
+        
+    playback_speeded_audio = audio._spawn(audio.raw_data, overrides={
+        "frame_rate": int(audio.frame_rate * playback_speed_factor)
     }).set_frame_rate(audio.frame_rate)
-    return stretched_audio
+    return playback_speeded_audio
+
 
 def pan_audio(audio, pan_value):
     """Pan an audio segment based on the given pan value (-1 to 1)."""
@@ -117,7 +122,7 @@ def pan_audio(audio, pan_value):
     return panned_audio
 
 
-def fill_audio_based_on_formula(audios, select_formula, gap_formula, stretch_formula, start_formula, duration_formula, duration_in_millis):
+def fill_audio_based_on_formula(audios, select_formula, gap_formula, playback_speed_formula, start_formula, duration_formula, duration_in_millis):
     result = AudioSegment.silent(duration=duration_in_millis)
     t_millis = 0
     while t_millis < duration_in_millis:
@@ -126,16 +131,16 @@ def fill_audio_based_on_formula(audios, select_formula, gap_formula, stretch_for
         # Extract grain
         audio_for_t = extract_grain(audio_for_t, start_formula, duration_formula, t_millis)
         
-        # Get fade-in and fade-out durations
-        fade_in_duration = evaluate_formula(current_folder.formulas["fade in"], t_millis)
-        fade_out_duration = evaluate_formula(current_folder.formulas["fade out"], t_millis)
+        # Get fade-in and fade-out percentages
+        fade_in_percent = evaluate_formula(current_folder.formulas["fade in"], t_millis)
+        fade_out_percent = evaluate_formula(current_folder.formulas["fade out"], t_millis)
         
         # Apply the Hann window with fade-in and fade-out
-        windowed_grain = apply_hann_window(audio_for_t, fade_in_duration, fade_out_duration)
+        windowed_grain = apply_hann_window(audio_for_t, fade_in_percent, fade_out_percent)
         
-        # Apply time-stretching
-        stretch_factor = evaluate_formula(stretch_formula, t_millis)
-        audio_for_t = time_stretch(windowed_grain, stretch_factor)
+        # Apply time-playback_speeding
+        playback_speed_factor = evaluate_formula(playback_speed_formula, t_millis)
+        audio_for_t = time_playback_speed(windowed_grain, playback_speed_factor)
         
         # Ensure the audio is in stereo format
         if audio_for_t.channels == 1:
@@ -151,6 +156,7 @@ def fill_audio_based_on_formula(audios, select_formula, gap_formula, stretch_for
         gap_seconds = max(gap_seconds, min_gap_seconds)
         t_millis += int(gap_seconds * 1000)
     return result
+
 
 def evaluate_formula(formula, t_millis):
     context = get_evaluation_context(t_millis)
@@ -175,13 +181,13 @@ def simple_evaluate(formula, x_value, context):
 
 
 
-def apply_hann_window(audio, fade_in_duration, fade_out_duration):
+def apply_hann_window(audio, fade_in_percent, fade_out_percent):
     """Apply a Hann window to the audio segment with fade-in and fade-out."""
     num_samples = len(audio.get_array_of_samples())
     
-    # Calculate the number of samples for fade-in and fade-out
-    fade_in_samples = int(fade_in_duration * audio.frame_rate)
-    fade_out_samples = int(fade_out_duration * audio.frame_rate)
+    # Calculate the number of samples for fade-in and fade-out based on percentages
+    fade_in_samples = int((fade_in_percent / 100) * num_samples)
+    fade_out_samples = int((fade_out_percent / 100) * num_samples)
     
     # Generate the Hann window
     hann_window = []
@@ -232,13 +238,12 @@ def extract_grain(audio, start_formula, duration_formula, t_millis):
 
     grain = audio[grain_start:grain_end]
     
-    # Get fade-in and fade-out durations
-    fade_in_duration = evaluate_formula(current_folder.formulas["fade in"], t_millis)
-    fade_out_duration = evaluate_formula(current_folder.formulas["fade out"], t_millis)
+    # Get fade-in and fade-out percentages
+    fade_in_percent = evaluate_formula(current_folder.formulas["fade in"], t_millis)
+    fade_out_percent = evaluate_formula(current_folder.formulas["fade out"], t_millis)
     
     # Apply the Hann window to the grain
-    windowed_grain = apply_hann_window(grain, fade_in_duration, fade_out_duration)
-    
+    windowed_grain = apply_hann_window(grain, fade_in_percent, fade_out_percent)
     return windowed_grain
 
 
@@ -297,10 +302,10 @@ class AppFrame(wx.Frame):
             folder_audio = fill_audio_based_on_formula(
                 folder.audio_files, 
                 folder.formulas["sample"], 
-                folder.formulas["rhythm"], 
-                folder.formulas["stretch"], 
-                folder.formulas["grain start"], 
-                folder.formulas["grain duration"], 
+                folder.formulas["spacing"], 
+                folder.formulas["playback speed"], 
+                folder.formulas["start"], 
+                folder.formulas["duration"], 
                 int(duration * 1000)
             )
             amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000))
@@ -389,5 +394,5 @@ class AppFrame(wx.Frame):
 
 
 app = wx.App()
-AppFrame(None, 'deining')
+AppFrame(None, 'Deining.V1')
 app.MainLoop()
