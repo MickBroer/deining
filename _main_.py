@@ -1,11 +1,15 @@
 import os
 import math
 from pydub import AudioSegment
+from pydub.playback import _play_with_pyaudio
+import pyaudio
+
 from datetime import datetime
 import wx
 import array
-import random
 import platform
+import threading
+
 
 # Definitions
 audio_folders = []
@@ -181,6 +185,8 @@ def simple_evaluate(formula, x_value, context):
 
 
 
+
+
 def apply_hann_window(audio, fade_in_percent, fade_out_percent):
     """Apply a Hann window to the audio segment with fade-in and fade-out."""
     num_samples = len(audio.get_array_of_samples())
@@ -323,8 +329,53 @@ class AppFrame(wx.Frame):
 
     def __init__(self, parent, title):
         super(AppFrame, self).__init__(parent, title=title, size=(900, 600))
-
+        self.playing_audio = False
         self.InitUI()
+
+    def play_audio(self, event):
+        threading.Thread(target=self.play_audio_in_thread).start()
+
+    def stop_audio(self, event):
+        self.playing_audio = False 
+
+    def play_audio_in_thread(self):
+        self.playing_audio = True  # Set to True when starting playback
+        audio_to_play = self.generate_preview_audio()
+
+        p = pyaudio.PyAudio()
+        stream = p.open(format=p.get_format_from_width(audio_to_play.sample_width),
+                        channels=audio_to_play.channels,
+                        rate=audio_to_play.frame_rate,
+                        output=True)
+
+        # Stream the audio in chunks
+        for chunk in audio_to_play[::1024]:
+            if not self.playing_audio:
+                break
+            stream.write(chunk._data)
+
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+
+    def generate_preview_audio(self):
+        duration = self.duration_spin.GetValue()
+        combined_audio = AudioSegment.silent(duration=int(duration * 1000))
+        for folder in audio_folders:
+            folder_audio = fill_audio_based_on_formula(
+                folder.audio_files, 
+                folder.formulas["sample"], 
+                folder.formulas["spacing"], 
+                folder.formulas["playback speed"], 
+                folder.formulas["start"], 
+                folder.formulas["duration"], 
+                int(duration * 1000)
+            )
+            amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000))
+            gain_db = multiplier_to_db(amplitude_multiplier)
+            folder_audio = folder_audio.apply_gain(gain_db)
+            combined_audio = combined_audio.overlay(folder_audio)
+        return combined_audio
 
     def InitUI(self):
         panel = wx.Panel(self)
@@ -357,6 +408,14 @@ class AppFrame(wx.Frame):
 
         self.sample_rate_dropdown = wx.Choice(panel, choices=sample_rates)
         hbox1.Add(self.sample_rate_dropdown, flag=wx.RIGHT, border=10)
+
+        self.playback_button = wx.Button(panel, label='Play')
+        self.playback_button.Bind(wx.EVT_BUTTON, self.play_audio)
+        hbox1.Add(self.playback_button, flag=wx.RIGHT, border=10)  # Added border here
+
+        stop_button = wx.Button(panel, label='Stop')
+        stop_button.Bind(wx.EVT_BUTTON, self.stop_audio)
+        hbox1.Add(stop_button, flag=wx.RIGHT, border=10)
 
         # Export button
         export_button = wx.Button(panel, label='Export')
