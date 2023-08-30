@@ -3,7 +3,6 @@ import math
 from pydub import AudioSegment
 from pydub.playback import _play_with_pyaudio
 import pyaudio
-
 from datetime import datetime
 import wx
 import array
@@ -16,8 +15,8 @@ audio_folders = []
 current_folder = None
 
 parameters = [
-    "sample", "amplitude", "spacing", "playback speed", "start", 
-    "panning", "duration", "fade in", "fade out"
+    "sample", "amplitude", "spacing", "playback_speed", "start", 
+    "panning", "duration", "fade_in", "fade_out"
 ]
 
 if platform.system() == "Darwin":
@@ -38,12 +37,12 @@ class AudioFolder:
             "sample": "x",
             "amplitude": "0.9",
             "spacing": "(x+5)/10",
-            "playback speed": "1.0",
+            "playback_speed": "1.0",
             "start": "x/10%100",
             "panning": "0",
-            "duration": "100",  # Default to 0% of the audio file
-            "fade in": "0.5",  # Default to 0.5 seconds
-            "fade out": "0.5"  # Default to 0.5 seconds
+            "duration": "100",
+            "fade_in": "0.5",
+            "fade_out": "0.5"
         }
 
 
@@ -52,28 +51,30 @@ class AudioFolder:
             file_paths = [os.path.join(self.path, file) for file in os.listdir(self.path) if file.endswith('.wav')]
             self.audio_files = [AudioSegment.from_wav(f) for f in file_paths]
 
-def get_evaluation_order():
+def get_evaluation_order(folder):
     """Return a list of formula names in the order they should be evaluated."""
-    remaining = set(current_folder.formulas.keys())
+    remaining = set(folder.formulas.keys())  # Use the formulas from the passed-in folder
     order = []
     while remaining:
         for formula_name in list(remaining):
-            if not get_dependencies(current_folder.formulas[formula_name]).difference(order):
+            if not get_dependencies(folder.formulas[formula_name]).difference(order):
                 order.append(formula_name)
                 remaining.remove(formula_name)
     return order
 
 # Functions
-def get_evaluation_context(t_millis):
+def get_evaluation_context(t_millis, all_folders):
     x_value = t_millis / 1000
     context = {"x": x_value}
     
-    evaluation_order = get_evaluation_order()
-    for formula_name in evaluation_order:
-        formula = current_folder.formulas[formula_name]
-        context[formula_name] = simple_evaluate(formula, x_value, context)
+    for i, folder in enumerate(all_folders):
+        evaluation_order = get_evaluation_order(folder)
+        for formula_name in evaluation_order:
+            formula = folder.formulas[formula_name]
+            context[f"{i+1}.{formula_name}"] = simple_evaluate(formula, x_value, context)
     
     return context
+
 
 def multiplier_to_db(multiplier):
     return 20 * math.log10(multiplier)
@@ -94,6 +95,9 @@ def time_playback_speed(audio, playback_speed_factor):
     }).set_frame_rate(audio.frame_rate)
     return playback_speeded_audio
 
+def evaluate_formula(formula, t_millis, all_folders):
+    context = get_evaluation_context(t_millis, all_folders)
+    return eval(formula, {}, context)
 
 def pan_audio(audio, pan_value):
     """Pan an audio segment based on the given pan value (-1 to 1)."""
@@ -126,24 +130,24 @@ def pan_audio(audio, pan_value):
     return panned_audio
 
 
-def fill_audio_based_on_formula(audios, select_formula, gap_formula, playback_speed_formula, start_formula, duration_formula, duration_in_millis):
+def fill_audio_based_on_formula(audios, select_formula, gap_formula, playback_speed_formula, start_formula, duration_formula, duration_in_millis, all_folders):
     result = AudioSegment.silent(duration=duration_in_millis)
     t_millis = 0
+    audio_for_t = AudioSegment.silent(duration=0) 
     while t_millis < duration_in_millis:
         audio_for_t = get_audio_for_time(audios, select_formula, t_millis)
-        
-        # Extract grain
-        audio_for_t = extract_grain(audio_for_t, start_formula, duration_formula, t_millis)
+
+        audio_for_t = extract_grain(audio_for_t, start_formula, duration_formula, t_millis, all_folders)
         
         # Get fade-in and fade-out percentages
-        fade_in_percent = evaluate_formula(current_folder.formulas["fade in"], t_millis)
-        fade_out_percent = evaluate_formula(current_folder.formulas["fade out"], t_millis)
+        fade_in_percent = evaluate_formula(current_folder.formulas["fade_in"], t_millis, all_folders)
+        fade_out_percent = evaluate_formula(current_folder.formulas["fade_out"], t_millis, all_folders)
         
         # Apply the Hann window with fade-in and fade-out
         windowed_grain = apply_hann_window(audio_for_t, fade_in_percent, fade_out_percent)
         
         # Apply time-playback_speeding
-        playback_speed_factor = evaluate_formula(playback_speed_formula, t_millis)
+        playback_speed_factor = evaluate_formula(playback_speed_formula, t_millis, all_folders)
         audio_for_t = time_playback_speed(windowed_grain, playback_speed_factor)
         
         # Ensure the audio is in stereo format
@@ -151,20 +155,33 @@ def fill_audio_based_on_formula(audios, select_formula, gap_formula, playback_sp
             audio_for_t = audio_for_t.set_channels(2)
         
         # Apply panning
-        pan_value = evaluate_formula(current_folder.formulas["panning"], t_millis)
+        pan_value = evaluate_formula(current_folder.formulas["panning"], t_millis, all_folders)
         audio_for_t = pan_audio(audio_for_t, pan_value)
 
         result = result.overlay(audio_for_t, position=t_millis)
-        gap_seconds = evaluate_formula(gap_formula, t_millis)
+        gap_seconds = evaluate_formula(gap_formula, t_millis, all_folders)
         min_gap_seconds = 0.001
         gap_seconds = max(gap_seconds, min_gap_seconds)
         t_millis += int(gap_seconds * 1000)
     return result
 
 
-def evaluate_formula(formula, t_millis):
-    context = get_evaluation_context(t_millis)
-    return eval(formula, {}, context)
+
+def get_evaluation_context(t_millis, all_folders):
+    x_value = t_millis / 1000
+    context = {"x": x_value}
+    
+    for i, folder in enumerate(all_folders):
+        evaluation_order = get_evaluation_order(folder)
+        for formula_name in evaluation_order:
+            formula = folder.formulas[formula_name]
+            # Use a different key format that won't conflict with Python syntax
+            context_key = f"folder_{i+1}_{formula_name}"
+            context[context_key] = simple_evaluate(formula, x_value, context)
+    
+    return context
+
+
 
 # Global cache dictionary
 formula_cache = {}
@@ -232,9 +249,9 @@ def ensure_exports_folder_exists():
         os.makedirs(exports_path)
 
 
-def extract_grain(audio, start_formula, duration_formula, t_millis):
-    start_percent = evaluate_formula(start_formula, t_millis) / 100
-    duration_percent = evaluate_formula(duration_formula, t_millis) / 100
+def extract_grain(audio, start_formula, duration_formula, t_millis, all_folders):
+    start_percent = evaluate_formula(start_formula, t_millis, all_folders) / 100
+    duration_percent = evaluate_formula(duration_formula, t_millis, all_folders) / 100
 
     grain_start = int(start_percent * len(audio))
     grain_end = grain_start + int(duration_percent * len(audio))
@@ -245,12 +262,13 @@ def extract_grain(audio, start_formula, duration_formula, t_millis):
     grain = audio[grain_start:grain_end]
     
     # Get fade-in and fade-out percentages
-    fade_in_percent = evaluate_formula(current_folder.formulas["fade in"], t_millis)
-    fade_out_percent = evaluate_formula(current_folder.formulas["fade out"], t_millis)
+    fade_in_percent = evaluate_formula(current_folder.formulas["fade_in"], t_millis, all_folders)
+    fade_out_percent = evaluate_formula(current_folder.formulas["fade_out"], t_millis, all_folders)
     
     # Apply the Hann window to the grain
     windowed_grain = apply_hann_window(grain, fade_in_percent, fade_out_percent)
     return windowed_grain
+
 
 
 # Options for file formats, bitrates, and sample rates
@@ -306,15 +324,16 @@ class AppFrame(wx.Frame):
         combined_audio = AudioSegment.silent(duration=int(duration * 1000))
         for folder in audio_folders:
             folder_audio = fill_audio_based_on_formula(
-                folder.audio_files, 
-                folder.formulas["sample"], 
-                folder.formulas["spacing"], 
-                folder.formulas["playback speed"], 
-                folder.formulas["start"], 
-                folder.formulas["duration"], 
-                int(duration * 1000)
-            )
-            amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000))
+            folder.audio_files, 
+            folder.formulas["sample"], 
+            folder.formulas["spacing"], 
+            folder.formulas["playback_speed"], 
+            folder.formulas["start"], 
+            folder.formulas["duration"], 
+            int(duration * 1000),
+            audio_folders  # Pass all folders here
+        )
+            amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000), audio_folders)
             gain_db = multiplier_to_db(amplitude_multiplier)
             folder_audio = folder_audio.apply_gain(gain_db)
             combined_audio = combined_audio.overlay(folder_audio)
@@ -363,14 +382,15 @@ class AppFrame(wx.Frame):
         combined_audio = AudioSegment.silent(duration=int(duration * 1000))
         for folder in audio_folders:
             folder_audio = fill_audio_based_on_formula(
-                folder.audio_files, 
-                folder.formulas["sample"], 
-                folder.formulas["spacing"], 
-                folder.formulas["playback speed"], 
-                folder.formulas["start"], 
-                folder.formulas["duration"], 
-                int(duration * 1000)
-            )
+            folder.audio_files, 
+            folder.formulas["sample"], 
+            folder.formulas["spacing"], 
+            folder.formulas["playback_speed"], 
+            folder.formulas["start"], 
+            folder.formulas["duration"], 
+            int(duration * 1000),
+            audio_folders  # Pass all folders here
+        )
             amplitude_multiplier = evaluate_formula(folder.formulas["amplitude"], int(duration * 1000))
             gain_db = multiplier_to_db(amplitude_multiplier)
             folder_audio = folder_audio.apply_gain(gain_db)
@@ -455,3 +475,4 @@ class AppFrame(wx.Frame):
 app = wx.App()
 AppFrame(None, 'Deining.V1')
 app.MainLoop()
+
