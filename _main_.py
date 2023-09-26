@@ -8,15 +8,21 @@ import wx
 import array
 import platform
 import threading
-
+from mido import Message, MidiFile, MidiTrack
 
 # Definitions
+folders = []
 audio_folders = []
+midi_folders = []
 current_folder = None
 
 parameters = [
     "sample", "amplitude", "spacing", "playback_speed", "start", 
     "panning", "duration", "fade_in", "fade_out"
+]
+
+midi_parameters = [
+    "pitch", "velocity", "duration", "spacing"
 ]
 
 if platform.system() == "Darwin":
@@ -29,6 +35,7 @@ else:
     raise Exception("Unsupported OS")
 
 AudioSegment.converter = ffmpeg_path
+
 class AudioFolder:
     def __init__(self, path=None):
         self.path = path
@@ -50,6 +57,40 @@ class AudioFolder:
         if self.path:
             file_paths = [os.path.join(self.path, file) for file in os.listdir(self.path) if file.endswith('.wav')]
             self.audio_files = [AudioSegment.from_wav(f) for f in file_paths]
+
+class MidiFolder:
+    def __init__(self):
+        self.midi_files = []  # You can populate this list with MIDI files if needed
+        self.formulas = {
+            "velocity": "64",  # Default to MIDI velocity 64
+            "pitch": "60",  # Default to middle C
+            "duration": "200",  # Default to MIDI channel 1
+            "spacing": "100"
+            # Add more MIDI parameters here
+        }
+
+def generate_midi_based_on_formula(duration_in_millis, all_folders):
+    mid = MidiFile()
+    track = MidiTrack()
+    mid.tracks.append(track)
+
+    t_millis = 0
+    while t_millis < duration_in_millis:
+        # Use your existing formulas to determine MIDI parameters
+        pitch = int(evaluate_formula(current_folder.formulas["pitch"], t_millis, all_folders))
+        velocity = int(evaluate_formula(current_folder.formulas["velocity"], t_millis, all_folders))
+        duration = int(evaluate_formula(current_folder.formulas["duration"], t_millis, all_folders))
+        spacing = int(evaluate_formula(current_folder.formulas["spacing"], t_millis, all_folders))
+
+        # Add MIDI events
+        track.append(Message('note_on', note=pitch, velocity=velocity, time=0))
+        track.append(Message('note_off', note=pitch, velocity=velocity, time=duration))
+
+        # Update time
+        t_millis += spacing
+
+    # Save the MIDI file
+    mid.save('output.mid')
 
 def get_evaluation_order(folder):
     """Return a list of formula names in the order they should be evaluated."""
@@ -83,6 +124,8 @@ def get_audio_for_time(audios, formula, t_millis):
     y = eval(formula.replace('x', str(t_millis / 1000)))
     index = int(y) % len(audios)
     return audios[index]
+
+
 
 def time_playback_speed(audio, playback_speed_factor):
     """Time-playback_speed an audio segment by the given factor using pydub."""
@@ -181,8 +224,6 @@ def get_evaluation_context(t_millis, all_folders):
     
     return context
 
-
-
 # Global cache dictionary
 formula_cache = {}
 
@@ -277,6 +318,7 @@ bitrates = ["64k", "128k", "192k", "256k", "320k"]
 sample_rates = ["22050", "44100", "48000", "96000"]
 
 class AppFrame(wx.Frame):
+
     def add_new_folder(self, event):
         global current_folder  # Declare current_folder as global
         dialog = wx.DirDialog(self, "Choose a directory:", style=wx.DD_DEFAULT_STYLE)
@@ -291,6 +333,16 @@ class AppFrame(wx.Frame):
             self.update_display()
         dialog.Destroy()
 
+    def add_new_midi_folder(self, event):
+        global current_folder  # Declare current_folder as global
+        new_midi_folder = MidiFolder()
+        midi_folders.append(new_midi_folder)
+        current_folder = new_midi_folder
+        self.folder_listbox.Append("MIDI")
+        self.folder_listbox.SetSelection(self.folder_listbox.GetCount() - 1)  # Select the last added entry
+        self.update_display(midi=True)
+
+
     def update_formula(self, param, event):
         if self.updating_programmatically:
             return
@@ -300,23 +352,56 @@ class AppFrame(wx.Frame):
             self.update_display()
 
 
-    def update_display(self):
-        if current_folder:
+    def update_display(self, midi=False):
+        if midi:
+            # Update UI for MIDI-specific parameters
             self.updating_programmatically = True
-            for param in parameters:
-                formula = current_folder.formulas.get(param, "")
+            for param in midi_parameters:  # Assume midi_parameters is a list of MIDI-specific parameters
+                formula = current_folder.formulas.get(param, "")  # Use current_folder, which now can be a MidiFolder
                 self.entries[param].SetValue(formula)
             self.updating_programmatically = False
+        else:
+            if current_folder:
+                self.updating_programmatically = True
+                for param in parameters:
+                    formula = current_folder.formulas.get(param, "")
+                    self.entries[param].SetValue(formula)
+                self.updating_programmatically = False
+
 
 
     def switch_folder(self, event):
         global current_folder  # Declare current_folder as global
         try:
             index = self.folder_listbox.GetSelection()
-            current_folder = audio_folders[index]
-            self.update_display()
-        except:
-            pass
+            if self.folder_listbox.GetString(index) == "MIDI":
+                # Hide audio parameters and show MIDI parameters
+                for hbox in self.audio_boxes:
+                    hbox.ShowItems(False)
+                    print(hbox)
+                for hbox in self.midi_boxes:
+                    print(hbox)
+                    hbox.ShowItems(True)
+            else:
+                # Hide MIDI parameters and show audio parameters
+                for hbox in self.audio_boxes:
+                    hbox.ShowItems(True)
+                for hbox in self.midi_boxes:
+                    hbox.ShowItems(False)
+
+            self.audio_vbox.Layout()  # Explicitly update layout
+            self.midi_vbox.Layout()  # Explicitly update layout
+
+            self.Layout()  # Refresh layout
+            self.Fit()  # Adjust to content size
+            self.Refresh()
+            self.update_display(midi=(self.folder_listbox.GetString(index) == "MIDI"))
+        except Exception as e:
+            print(f"An error occurred: {e}")
+
+
+
+
 
     def export(self, event):
         ensure_exports_folder_exists()
@@ -341,6 +426,8 @@ class AppFrame(wx.Frame):
         current_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         exports_path = os.path.join(os.getcwd(), "exports")
         filename = os.path.join(exports_path, f"combined_output_{current_time_str}." + self.format_dropdown.GetStringSelection())
+        
+        generate_midi_based_on_formula(int(duration * 1000), midi_folders)
 
         combined_audio.export(filename, format=self.format_dropdown.GetStringSelection(), bitrate=self.bitrate_dropdown.GetStringSelection(), parameters=["-ar", str(self.sample_rate_dropdown.GetStringSelection())])
         wx.MessageBox(f"Audio files combined and saved as '{filename}'", 'Info', wx.OK | wx.ICON_INFORMATION)
@@ -356,6 +443,9 @@ class AppFrame(wx.Frame):
 
     def stop_audio(self, event):
         self.playing_audio = False 
+
+    def make_lambda(p):
+        return lambda event: self.update_formula(p, event)
 
     def play_audio_in_thread(self):
         self.playing_audio = True  # Set to True when starting playback
@@ -400,7 +490,8 @@ class AppFrame(wx.Frame):
     def InitUI(self):
         panel = wx.Panel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
-
+        
+        
         # Top layout
         hbox1 = wx.BoxSizer(wx.HORIZONTAL)
 
@@ -408,6 +499,10 @@ class AppFrame(wx.Frame):
         select_button = wx.Button(panel, label='Add Folder')
         select_button.Bind(wx.EVT_BUTTON, self.add_new_folder)
         hbox1.Add(select_button, flag=wx.RIGHT, border=10)
+
+        select_midi_button = wx.Button(panel, label='Add MIDI')
+        select_midi_button.Bind(wx.EVT_BUTTON, self.add_new_midi_folder)
+        hbox1.Add(select_midi_button, flag=wx.RIGHT, border=10)
 
         # Duration label and spinbox
         duration_label = wx.StaticText(panel, label='Duration:')
@@ -453,17 +548,41 @@ class AppFrame(wx.Frame):
         self.bitrate_dropdown.SetSelection(1)  # Default to '128k'
         self.sample_rate_dropdown.SetSelection(1)  # Default to '44100'
 
+        self.audio_vbox = wx.BoxSizer(wx.VERTICAL)
+        self.midi_vbox = wx.BoxSizer(wx.VERTICAL)
+
         # Parameters entries
         self.entries = {}
-        for param in parameters:
+        self.audio_boxes = []  # List to hold audio parameter boxes
+        self.midi_boxes = []  # List to hold MIDI parameter boxes
+
+        for param in parameters:  # Loop for audio parameters
             hbox = wx.BoxSizer(wx.HORIZONTAL)
             label = wx.StaticText(panel, label=param.capitalize())
             hbox.Add(label, flag=wx.RIGHT, border=10)
-            entry = wx.TextCtrl(panel)
+            entry = wx.TextCtrl(panel, size=(200, -1))
             entry.Bind(wx.EVT_TEXT, lambda event, p=param: self.update_formula(p, event))
+            hbox.Add(entry)
             self.entries[param] = entry
-            hbox.Add(entry, proportion=1)
-            vbox.Add(hbox, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+            self.audio_boxes.append(hbox)
+            self.audio_vbox.Add(hbox, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+            hbox.ShowItems(True)  # Hide MIDI parameters initially
+
+        for param in midi_parameters:  # Loop for MIDI parameters
+            hbox = wx.BoxSizer(wx.HORIZONTAL)
+            label = wx.StaticText(panel, label=param.capitalize())
+            hbox.Add(label, flag=wx.RIGHT, border=10)
+            entry = wx.TextCtrl(panel, size=(200, -1))
+            entry.Bind(wx.EVT_TEXT, lambda event, p=param: self.update_formula(p, event))
+            hbox.Add(entry)
+            self.entries[param] = entry
+            self.midi_boxes.append(hbox)
+            self.midi_vbox.Add(hbox, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+            hbox.ShowItems(True)  # Hide MIDI parameters initially
+
+        # Add audio and MIDI vertical box sizers to the main vertical box sizer
+        vbox.Add(self.audio_vbox, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+        vbox.Add(self.midi_vbox, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
 
         panel.SetSizer(vbox)
         self.updating_programmatically = False
@@ -471,8 +590,9 @@ class AppFrame(wx.Frame):
         self.Centre()
         self.Show(True)
 
+        
+
 
 app = wx.App()
 AppFrame(None, 'Deining.V1')
 app.MainLoop()
-
