@@ -22,7 +22,7 @@ parameters = [
 ]
 
 midi_parameters = [
-    "pitch", "velocity", "duration", "spacing"
+    "pitch", "velocity", "notelength", "notespacing"
 ]
 
 if platform.system() == "Darwin":
@@ -64,33 +64,49 @@ class MidiFolder:
         self.formulas = {
             "velocity": "64",  # Default to MIDI velocity 64
             "pitch": "60",  # Default to middle C
-            "duration": "200",  # Default to MIDI channel 1
-            "spacing": "100"
+            "notelength": "200",  # Default to MIDI channel 1
+            "notespacing": "100"
             # Add more MIDI parameters here
         }
 
-def generate_midi_based_on_formula(duration_in_millis, all_folders):
+def generate_midi_based_on_formula(duration_in_millis, all_folders, filename):
     mid = MidiFile()
     track = MidiTrack()
     mid.tracks.append(track)
 
     t_millis = 0
+    
     while t_millis < duration_in_millis:
         # Use your existing formulas to determine MIDI parameters
-        pitch = int(evaluate_formula(current_folder.formulas["pitch"], t_millis, all_folders))
-        velocity = int(evaluate_formula(current_folder.formulas["velocity"], t_millis, all_folders))
-        duration = int(evaluate_formula(current_folder.formulas["duration"], t_millis, all_folders))
-        spacing = int(evaluate_formula(current_folder.formulas["spacing"], t_millis, all_folders))
+        if "pitch" in current_folder.formulas:
+            pitch = int(evaluate_formula(current_folder.formulas["pitch"], t_millis, all_folders))
+        else:
+            pitch = 60
+
+        if "velocity" in current_folder.formulas:
+            velocity = int(evaluate_formula(current_folder.formulas["velocity"], t_millis, all_folders))
+        else:
+            velocity = 60
+
+        if "notelength" in current_folder.formulas:
+            notelength = int(evaluate_formula(current_folder.formulas["notelength"], t_millis, all_folders))
+        else:
+            notelength = 100
+
+        if "notespacing" in current_folder.formulas:
+            notespacing = int(evaluate_formula(current_folder.formulas["notespacing"], t_millis, all_folders))
+        else:
+            notespacing = 100
 
         # Add MIDI events
         track.append(Message('note_on', note=pitch, velocity=velocity, time=0))
-        track.append(Message('note_off', note=pitch, velocity=velocity, time=duration))
+        track.append(Message('note_off', note=pitch, velocity=velocity, time=notelength))
 
         # Update time
-        t_millis += spacing
+        t_millis += notespacing
 
     # Save the MIDI file
-    mid.save('output.mid')
+    mid.save(f"./exports/{filename}")
 
 def get_evaluation_order(folder):
     """Return a list of formula names in the order they should be evaluated."""
@@ -303,8 +319,15 @@ def extract_grain(audio, start_formula, duration_formula, t_millis, all_folders)
     grain = audio[grain_start:grain_end]
     
     # Get fade-in and fade-out percentages
-    fade_in_percent = evaluate_formula(current_folder.formulas["fade_in"], t_millis, all_folders)
-    fade_out_percent = evaluate_formula(current_folder.formulas["fade_out"], t_millis, all_folders)
+    if "fade_in" in current_folder.formulas:
+        fade_in_percent = evaluate_formula(current_folder.formulas["fade_in"], t_millis, all_folders)
+    else:
+        fade_in_percent = 0.01
+
+    if "fade_out" in current_folder.formulas:
+        fade_out_percent = evaluate_formula(current_folder.formulas["fade_out"], t_millis, all_folders)
+    else:
+        fade_out_percent = 0.01
     
     # Apply the Hann window to the grain
     windowed_grain = apply_hann_window(grain, fade_in_percent, fade_out_percent)
@@ -378,9 +401,7 @@ class AppFrame(wx.Frame):
                 # Hide audio parameters and show MIDI parameters
                 for hbox in self.audio_boxes:
                     hbox.ShowItems(False)
-                    print(hbox)
                 for hbox in self.midi_boxes:
-                    print(hbox)
                     hbox.ShowItems(True)
             else:
                 # Hide MIDI parameters and show audio parameters
@@ -394,8 +415,8 @@ class AppFrame(wx.Frame):
 
             self.Layout()  # Refresh layout
             self.Fit()  # Adjust to content size
-            self.Refresh()
-            self.update_display(midi=(self.folder_listbox.GetString(index) == "MIDI"))
+            # self.Refresh()
+            # self.update_display(midi=(self.folder_listbox.GetString(index) == "MIDI"))
         except Exception as e:
             print(f"An error occurred: {e}")
 
@@ -427,7 +448,7 @@ class AppFrame(wx.Frame):
         exports_path = os.path.join(os.getcwd(), "exports")
         filename = os.path.join(exports_path, f"combined_output_{current_time_str}." + self.format_dropdown.GetStringSelection())
         
-        generate_midi_based_on_formula(int(duration * 1000), midi_folders)
+        generate_midi_based_on_formula(int(duration * 1000), midi_folders, f"{current_time_str}.mid")
 
         combined_audio.export(filename, format=self.format_dropdown.GetStringSelection(), bitrate=self.bitrate_dropdown.GetStringSelection(), parameters=["-ar", str(self.sample_rate_dropdown.GetStringSelection())])
         wx.MessageBox(f"Audio files combined and saved as '{filename}'", 'Info', wx.OK | wx.ICON_INFORMATION)
@@ -496,7 +517,7 @@ class AppFrame(wx.Frame):
         hbox1 = wx.BoxSizer(wx.HORIZONTAL)
 
         # Add Folder button
-        select_button = wx.Button(panel, label='Add Folder')
+        select_button = wx.Button(panel, label='Add Audio')
         select_button.Bind(wx.EVT_BUTTON, self.add_new_folder)
         hbox1.Add(select_button, flag=wx.RIGHT, border=10)
 
